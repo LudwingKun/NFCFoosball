@@ -1,0 +1,4 @@
+project_id = "nfc-foosball"
+
+[functions.match-api]
+verify_jwt = true
