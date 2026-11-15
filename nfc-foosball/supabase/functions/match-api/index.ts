@@ -17,6 +17,24 @@ function jsonResponse(body: unknown, status = 200) {
 function badRequest(message: string) {
   return jsonResponse({ error: message }, 400);
 }
+type Participant = { player_id: string; team: string };
+
+const TEAM_SIZE: Record<string, number> = { singles: 1, doubles: 2 };
+
+// The active match of a table (open or in progress), with its participants.
+// RLS decides what the caller can see: open matches, and matches they are in.
+// deno-lint-ignore no-explicit-any
+async function findActiveMatch(supabase: any, slug: string) {
+  return await supabase
+    .from("matches")
+    .select(
+      "id, status, format, tables!inner(slug), participants:match_players(player_id, team)",
+    )
+    .eq("tables.slug", slug)
+    .in("status", ["open", "in_progress"])
+    .limit(1)
+    .maybeSingle();
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -67,7 +85,7 @@ Deno.serve(async (req: Request) => {
       const tableSlug = body.table_slug;
       const format = body.format;
       if (typeof tableSlug !== "string" ||
-          !["singles", "doubles"].includes(String(format))) {
+        !["singles", "doubles"].includes(String(format))) {
         return badRequest("table_slug and format (singles|doubles) are required");
       }
       ({ data: result, error } = await supabase.rpc("create_match", {
@@ -89,11 +107,91 @@ Deno.serve(async (req: Request) => {
       }));
       break;
     }
+    case "get_table_match": {
+      if (typeof body.table_slug !== "string") {
+        return badRequest("table_slug is required");
+      }
+      ({ data: result, error } = await findActiveMatch(supabase, body.table_slug));
+      break;
+    }
+    case "join_table": {
+      const slug = body.table_slug;
+      const format = body.format ?? "doubles";
+      if (typeof slug !== "string" || !["singles", "doubles"].includes(String(format))) {
+        return badRequest("table_slug and format (singles|doubles) are required");
+      }
+      const me = userData.user.id;
+
+      // Housekeeping: drop lobbies nobody joined for 30 min and cancel matches
+      // that were started but never finished. Errors here must not block the join.
+      await supabase.rpc("cleanup_stale_matches");
+
+      const found = await findActiveMatch(supabase, slug);
+      if (found.error) {
+        error = found.error;
+        break;
+      }
+      const active = found.data;
+
+      if (!active) {
+        // Nobody is playing: open a new match (the creator becomes Team A).
+        // If another match is running that I cannot see, this fails with 23505 -> 409.
+        ({ error } = await supabase.rpc("create_match", {
+          p_table_slug: slug,
+          p_format: format,
+        }));
+      } else if (!active.participants.some((p: Participant) => p.player_id === me)) {
+        if (active.status !== "open") {
+          return jsonResponse({ error: "A match is already in progress on this table" }, 409);
+        }
+        // Put the new player in the emptier team (Team A on a tie).
+        const size = TEAM_SIZE[active.format];
+        const count = (t: string) =>
+          active.participants.filter((p: Participant) => p.team === t).length;
+        const a = count("A");
+        const b = count("B");
+        const team = b >= size ? "A" : a >= size ? "B" : a <= b ? "A" : "B";
+
+        ({ error } = await supabase.rpc("join_match", {
+          p_match_id: active.id,
+          p_team: team,
+        }));
+      }
+      // else: I am already in this match, nothing to do.
+
+      if (error) break;
+
+      const refreshed = await findActiveMatch(supabase, slug);
+      result = refreshed.data;
+      error = refreshed.error;
+      break;
+    }
+
+    case "leave_match": {
+      if (typeof body.match_id !== "string") {
+        return badRequest("match_id is required");
+      }
+      // Returns true when the match was deleted because nobody was left in it.
+      ({ data: result, error } = await supabase.rpc("leave_match", {
+        p_match_id: body.match_id,
+      }));
+      break;
+    }
+
+    case "cancel_match": {
+      if (typeof body.match_id !== "string") {
+        return badRequest("match_id is required");
+      }
+      ({ data: result, error } = await supabase.rpc("cancel_match", {
+        p_match_id: body.match_id,
+      }));
+      break;
+    }
 
     case "submit_result": {
       if (typeof body.match_id !== "string" ||
-          !Number.isInteger(body.team_a_score) ||
-          !Number.isInteger(body.team_b_score)) {
+        !Number.isInteger(body.team_a_score) ||
+        !Number.isInteger(body.team_b_score)) {
         return badRequest("match_id and integer team scores are required");
       }
       ({ data: result, error } = await supabase.rpc("submit_match_result", {
@@ -103,37 +201,38 @@ Deno.serve(async (req: Request) => {
       }));
       break;
     }
-/* TODO: maybe re-enable later
-    case "confirm_result": {
-      if (typeof body.match_id !== "string" ||
-          typeof body.accepted !== "boolean") {
-        return badRequest("match_id and boolean accepted are required");
-      }
-      ({ data: result, error } = await supabase.rpc("confirm_match_result", {
-        p_match_id: body.match_id,
-        p_accepted: body.accepted,
-      }));
-      break;
-    }
-**/
+    /* TODO: maybe re-enable later
+        case "confirm_result": {
+          if (typeof body.match_id !== "string" ||
+              typeof body.accepted !== "boolean") {
+            return badRequest("match_id and boolean accepted are required");
+          }
+          ({ data: result, error } = await supabase.rpc("confirm_match_result", {
+            p_match_id: body.match_id,
+            p_accepted: body.accepted,
+          }));
+          break;
+        }
+    **/
     case "get_match": {
-      const { data, error } = await supabase
+      if (typeof body.match_id !== "string") {
+        return badRequest("match_id is required");
+      }
+      ({ data: result, error } = await supabase
         .from("matches")
         .select(`
-          *,
-          table:tables(*),
-          participants:match_players(
-            player_id,
-            team,
-            joined_at,
-            profile:profiles(display_name, avatar_url)
-          )
-        `)
+      *,
+      table:tables(*),
+      participants:match_players(
+        player_id,
+        team,
+        joined_at,
+        profile:profiles(display_name, avatar_url)
+      )
+    `)
         .eq("id", body.match_id)
-        .single();
-
-      if (error) return badRequest(error.message);
-      return json(data);
+        .single());
+      break;
     }
 
     case "get_leaderboard": {
@@ -141,7 +240,7 @@ Deno.serve(async (req: Request) => {
       const limit = body.limit ?? 20;
 
       if (!["singles", "doubles"].includes(String(format)) ||
-          !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100) {
+        !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100) {
         return badRequest("format must be singles|doubles and limit must be 1..100");
       }
 
@@ -164,12 +263,15 @@ Deno.serve(async (req: Request) => {
   if (error) {
     // Avoid returning internal SQL details to the client.
     const message = error.message || "Database operation failed";
-    const status = error.code === "42501" ? 403
-      : error.code === "P0002" ? 404
-      : error.code === "23505" ? 409
-      : error.code === "55000" ? 409
-      : error.code === "23514" ? 409
-      : 400;
+    const statusByCode: Record<string, number> = {
+      "42501": 403,
+      "P0002": 404,
+      "PGRST116": 404, // .single() found no row (e.g. the match was deleted)
+      "23505": 409,
+      "55000": 409,
+      "23514": 409,
+    };
+    const status = statusByCode[error.code ?? ""] ?? 400;
 
     return jsonResponse({ error: message, code: error.code ?? null }, status);
   }

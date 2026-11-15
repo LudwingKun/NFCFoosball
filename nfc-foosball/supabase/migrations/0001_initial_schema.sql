@@ -1,5 +1,7 @@
--- NFC Foosball — initial schema
--- Apply once to a new Supabase project.
+-- NFC Foosball — schema (single consolidated migration)
+-- Lifecycle: open -> in_progress (auto-start when both teams are full) -> completed.
+-- 'pending_confirmation' and result_confirmations are kept for a possible future
+-- confirmation step, but nothing uses them right now.
 
 create extension if not exists pgcrypto;
 
@@ -231,6 +233,7 @@ end;
 $$;
 
 -- Join a match. Capacity is checked while the match row is locked.
+-- The match starts automatically as soon as both teams are full.
 create or replace function public.join_match(
   p_match_id uuid,
   p_team public.team_side
@@ -245,6 +248,8 @@ declare
   v_match public.matches;
   v_capacity integer;
   v_count integer;
+  v_a integer;
+  v_b integer;
   v_player public.match_players;
 begin
   if v_user is null then
@@ -289,64 +294,28 @@ begin
   values (p_match_id, v_user, 'player_joined',
           jsonb_build_object('team', p_team));
 
-  return v_player;
-end;
-$$;
-
--- Start when both teams are full. Only creator can start.
-create or replace function public.start_match(p_match_id uuid)
-returns public.matches
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_user uuid := auth.uid();
-  v_match public.matches;
-  v_capacity integer;
-  v_a integer;
-  v_b integer;
-begin
-  select * into v_match from public.matches
-  where id = p_match_id for update;
-
-  if not found then
-    raise exception 'Match not found' using errcode = 'P0002';
-  end if;
-
-  if v_user is null or v_match.created_by <> v_user then
-    raise exception 'Only the creator can start this match' using errcode = '42501';
-  end if;
-
-  if v_match.status <> 'open' then
-    raise exception 'Match is not open' using errcode = '55000';
-  end if;
-
-  v_capacity := case when v_match.format = 'singles' then 1 else 2 end;
-
+  -- Both teams full: start the match.
   select count(*) filter (where team = 'A'),
          count(*) filter (where team = 'B')
   into v_a, v_b
   from public.match_players
   where match_id = p_match_id;
 
-  if v_a <> v_capacity or v_b <> v_capacity then
-    raise exception 'Both teams must be full before starting' using errcode = '23514';
+  if v_a = v_capacity and v_b = v_capacity then
+    update public.matches
+    set status = 'in_progress', started_at = now()
+    where id = p_match_id;
+
+    insert into public.match_events(match_id, actor_id, event_type)
+    values (p_match_id, v_user, 'match_started');
   end if;
 
-  update public.matches
-  set status = 'in_progress', started_at = now()
-  where id = p_match_id
-  returning * into v_match;
-
-  insert into public.match_events(match_id, actor_id, event_type)
-  values (p_match_id, v_user, 'match_started');
-
-  return v_match;
+  return v_player;
 end;
 $$;
 
--- Propose a score. No Elo changes until every participant accepts.
+-- Submit the final score. The match completes immediately and Elo is applied
+-- in the same transaction (no confirmation step in this version).
 create or replace function public.submit_match_result(
   p_match_id uuid,
   p_team_a_score integer,
@@ -360,67 +329,6 @@ as $$
 declare
   v_user uuid := auth.uid();
   v_match public.matches;
-begin
-  if v_user is null then
-    raise exception 'Authentication required' using errcode = '42501';
-  end if;
-
-  if p_team_a_score is null or p_team_b_score is null
-     or p_team_a_score < 0 or p_team_b_score < 0
-     or p_team_a_score = p_team_b_score then
-    raise exception 'Scores must be non-negative and cannot be tied' using errcode = '22023';
-  end if;
-
-  select * into v_match from public.matches
-  where id = p_match_id for update;
-
-  if not found then
-    raise exception 'Match not found' using errcode = 'P0002';
-  end if;
-
-  if not public.is_match_participant(p_match_id) then
-    raise exception 'Only participants can submit a result' using errcode = '42501';
-  end if;
-
-  if v_match.status <> 'in_progress' then
-    raise exception 'Match is not in progress' using errcode = '55000';
-  end if;
-
-  update public.matches
-  set team_a_score = p_team_a_score,
-      team_b_score = p_team_b_score,
-      proposed_by = v_user,
-      result_proposed_at = now(),
-      status = 'pending_confirmation'
-  where id = p_match_id
-  returning * into v_match;
-
-  delete from public.result_confirmations where match_id = p_match_id;
-
-  insert into public.match_events(match_id, actor_id, event_type, payload)
-  values (p_match_id, v_user, 'result_proposed',
-          jsonb_build_object('team_a_score', p_team_a_score,
-                             'team_b_score', p_team_b_score));
-
-  return v_match;
-end;
-$$;
-
--- Confirm or reject. On unanimous acceptance, update Elo exactly once.
-create or replace function public.confirm_match_result(
-  p_match_id uuid,
-  p_accepted boolean
-)
-returns public.matches
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_user uuid := auth.uid();
-  v_match public.matches;
-  v_player_count integer;
-  v_confirmed_count integer;
   v_avg_a numeric;
   v_avg_b numeric;
   v_expected_a numeric;
@@ -436,66 +344,47 @@ begin
     raise exception 'Authentication required' using errcode = '42501';
   end if;
 
-  select * into v_match from public.matches
-  where id = p_match_id for update;
+  if p_team_a_score is null or p_team_b_score is null
+     or p_team_a_score < 0 or p_team_b_score < 0
+     or p_team_a_score = p_team_b_score then
+    raise exception 'Scores must be non-negative and cannot be tied' using errcode = '22023';
+  end if;
+
+  select * into v_match
+  from public.matches
+  where id = p_match_id
+  for update;
 
   if not found then
     raise exception 'Match not found' using errcode = 'P0002';
   end if;
 
-  if v_match.status <> 'pending_confirmation' then
-    raise exception 'No result is awaiting confirmation' using errcode = '55000';
-  end if;
-
   if not public.is_match_participant(p_match_id) then
-    raise exception 'Only participants can confirm' using errcode = '42501';
+    raise exception 'Only participants can submit a result'
+      using errcode = '42501';
   end if;
 
-  insert into public.result_confirmations(match_id, player_id, decision)
-  values (
-    p_match_id,
-    v_user,
-    case when p_accepted then 'accepted'::public.confirmation_decision
-         else 'rejected'::public.confirmation_decision end
-  )
-  on conflict (match_id, player_id)
-  do update set decision = excluded.decision, created_at = now();
+  if v_match.status <> 'in_progress' then
+    raise exception 'Match is not in progress' using errcode = '55000';
+  end if;
+
+  -- This status transition and all Elo writes commit or roll back together.
+  update public.matches
+  set team_a_score = p_team_a_score,
+      team_b_score = p_team_b_score,
+      proposed_by = v_user,
+      result_proposed_at = now(),
+      status = 'completed',
+      completed_at = now()
+  where id = p_match_id
+  returning * into v_match;
 
   insert into public.match_events(match_id, actor_id, event_type, payload)
-  values (p_match_id, v_user,
-          case when p_accepted then 'result_accepted' else 'result_rejected' end,
-          '{}'::jsonb);
+  values (
+    p_match_id, v_user, 'result_submitted',
+    jsonb_build_object('team_a_score', p_team_a_score, 'team_b_score', p_team_b_score)
+  );
 
-  if not p_accepted then
-    update public.matches
-    set status = 'in_progress',
-        team_a_score = null,
-        team_b_score = null,
-        proposed_by = null,
-        result_proposed_at = null
-    where id = p_match_id
-    returning * into v_match;
-
-    delete from public.result_confirmations where match_id = p_match_id;
-
-    insert into public.match_events(match_id, actor_id, event_type)
-    values (p_match_id, v_user, 'result_disputed');
-
-    return v_match;
-  end if;
-
-  select count(*) into v_player_count
-  from public.match_players where match_id = p_match_id;
-
-  select count(*) into v_confirmed_count
-  from public.result_confirmations
-  where match_id = p_match_id and decision = 'accepted';
-
-  if v_confirmed_count <> v_player_count then
-    return v_match;
-  end if;
-
-  -- Lock rating rows in deterministic player-id order to reduce deadlock risk.
   perform 1
   from public.player_ratings pr
   join public.match_players mp on mp.player_id = pr.player_id
@@ -515,9 +404,14 @@ begin
   where mp.match_id = p_match_id and mp.team = 'B'
     and pr.format = v_match.format;
 
+  if v_avg_a is null or v_avg_b is null then
+    raise exception 'Both teams must have all players before submitting a result'
+      using errcode = '23514';
+  end if;
+
   v_expected_a := 1.0 / (1.0 + power(10.0, (v_avg_b - v_avg_a) / 400.0));
 
-  if v_match.team_a_score > v_match.team_b_score then
+  if p_team_a_score > p_team_b_score then
     v_delta_a := round(v_k * (1.0 - v_expected_a))::integer;
   else
     v_delta_a := round(v_k * (0.0 - v_expected_a))::integer;
@@ -535,8 +429,9 @@ begin
     where player_id = r.player_id and format = v_match.format
     for update;
 
-    v_won := (r.team = 'A' and v_match.team_a_score > v_match.team_b_score)
-          or (r.team = 'B' and v_match.team_b_score > v_match.team_a_score);
+    v_won :=
+      (r.team = 'A' and p_team_a_score > p_team_b_score)
+      or (r.team = 'B' and p_team_b_score > p_team_a_score);
 
     if r.team = 'A' then
       v_new := greatest(1, v_old + v_delta_a);
@@ -554,20 +449,15 @@ begin
 
     insert into public.rating_history(
       match_id, player_id, format, old_rating, new_rating, delta
-    ) values (
-      p_match_id, r.player_id, v_match.format, v_old, v_new, v_new - v_old
-    );
+    )
+    values (p_match_id, r.player_id, v_match.format, v_old, v_new, v_new - v_old);
   end loop;
 
-  update public.matches
-  set status = 'completed', completed_at = now()
-  where id = p_match_id
-  returning * into v_match;
-
   insert into public.match_events(match_id, actor_id, event_type, payload)
-  values (p_match_id, v_user, 'match_completed',
-          jsonb_build_object('elo_delta_team_a', v_delta_a,
-                             'elo_delta_team_b', v_delta_b));
+  values (
+    p_match_id, v_user, 'match_completed',
+    jsonb_build_object('elo_delta_team_a', v_delta_a, 'elo_delta_team_b', v_delta_b)
+  );
 
   return v_match;
 end;
@@ -668,15 +558,11 @@ from anon, authenticated;
 -- RPC execution: authenticated users only.
 revoke all on function public.create_match(text, public.match_format) from public;
 revoke all on function public.join_match(uuid, public.team_side) from public;
-revoke all on function public.start_match(uuid) from public;
 revoke all on function public.submit_match_result(uuid, integer, integer) from public;
-revoke all on function public.confirm_match_result(uuid, boolean) from public;
 
 grant execute on function public.create_match(text, public.match_format) to authenticated;
 grant execute on function public.join_match(uuid, public.team_side) to authenticated;
-grant execute on function public.start_match(uuid) to authenticated;
 grant execute on function public.submit_match_result(uuid, integer, integer) to authenticated;
-grant execute on function public.confirm_match_result(uuid, boolean) to authenticated;
 
 -- Seed the initial physical table.
 insert into public.tables(name, slug)
