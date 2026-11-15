@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+
+:root {
+  --orange-500: #ff7a1a;
+  --orange-600: #f26a0a;
+  --peach-50: #fff8f2;
+  --peach-100: #ffeede;
+  --peach-200: #ffd9b8;
+  --ink: #2b1a0e;
+  --muted: #7a6455;
+
+  color-scheme: light;
+  font-family: 'Outfit', system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--peach-50);
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+button,
+input {
+  font: inherit;
+}

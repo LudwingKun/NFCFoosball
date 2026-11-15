@@ -1,0 +1,50 @@
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 24px;
+}
+
+.app-header .brand {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.app-header nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-header nav a,
+.app-header nav button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.app-header nav a:hover,
+.app-header nav button:hover {
+  background: var(--peach-100);
+  color: var(--ink);
+}
+
+.app-header nav a.active {
+  background: var(--peach-100);
+  color: var(--ink);
+}
+
+.app-header nav a:focus-visible,
+.app-header nav button:focus-visible {
+  outline: 3px solid rgba(255, 122, 26, 0.55);
+  outline-offset: 2px;
+}
