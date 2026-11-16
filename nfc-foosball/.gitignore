@@ -30,3 +30,4 @@ supabase/.branches/
 # PlatformIO
 .pio/
 firmware/.pio/
+.DS_Store

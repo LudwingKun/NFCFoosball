@@ -5,8 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import AppHeader from '../components/AppHeader'
 import './TablePage.css'
 
-// 'doubles' = 4 players. Use 'singles' to test alone with two accounts.
-const DEFAULT_FORMAT = 'doubles'
+type Format = 'singles' | 'doubles'
 
 type Participant = {
   player_id: string
@@ -17,7 +16,7 @@ type Participant = {
 type Match = {
   id: string
   status: string
-  format: 'singles' | 'doubles'
+  format: Format
   team_a_score: number | null
   team_b_score: number | null
   table?: { name: string } | null
@@ -29,7 +28,12 @@ type Ended = 'left' | 'closed'
 
 function describe(e: unknown) {
   const err = e as ApiError
-  if (err.status === 404) return 'This match no longer exists.'
+  if (err.status === 404) {
+    // A wrong or retired tag/link points to a table that does not exist.
+    return err.message.startsWith('Table not found')
+      ? 'This table does not exist or is not active. Check the tag or the link.'
+      : 'This match no longer exists.'
+  }
   if (err.status === 409) {
     return 'This table is busy or the match just changed. Try again in a moment.'
   }
@@ -44,12 +48,15 @@ export default function TablePage() {
   const [matchId, setMatchId] = useState<string | null>(null)
   const [match, setMatch] = useState<Match | null>(null)
   const [ended, setEnded] = useState<Ended | null>(null)
+  const [choosing, setChoosing] = useState(false) // nobody is playing: ask singles or doubles
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false) // a leave/cancel request is running
   const [refresh, setRefresh] = useState(0) // bump to reload the match right away
   const joining = useRef(false) // also protects against StrictMode running the effect twice
 
-  const join = useCallback(async () => {
+  // Joins the table's match. The format is only used when nobody is playing yet and
+  // the match has to be created; if a match already exists the player just joins it.
+  const join = useCallback(async (format: Format) => {
     if (joining.current) return
     joining.current = true
     setError(null)
@@ -61,7 +68,7 @@ export default function TablePage() {
         try {
           active = await callApi<{ id: string } | null>('join_table', {
             table_slug: slug,
-            format: DEFAULT_FORMAT,
+            format,
           })
           break
         } catch (e) {
@@ -78,9 +85,27 @@ export default function TablePage() {
     }
   }, [slug])
 
+  // What happens when the page opens (an NFC tap): if a match is waiting, join it;
+  // if the table is free, let the player choose singles or doubles first.
+  const start = useCallback(async () => {
+    setError(null)
+    try {
+      const active = await callApi<{ id: string } | null>('get_table_match', { table_slug: slug })
+      if (active) await join('doubles') // format ignored: the existing match decides
+      else setChoosing(true)
+    } catch (e) {
+      setError(describe(e))
+    }
+  }, [slug, join])
+
   useEffect(() => {
-    void join()
-  }, [join])
+    void start()
+  }, [start])
+
+  function pick(format: Format) {
+    setChoosing(false)
+    void join(format)
+  }
 
   // Poll the match every 3s until it is over.
   const status = match?.status
@@ -115,8 +140,9 @@ export default function TablePage() {
     setMatch(null)
     setMatchId(null)
     setEnded(null)
+    setChoosing(false)
     joining.current = false
-    void join()
+    void start()
   }
 
   async function leaveMatch() {
@@ -161,11 +187,28 @@ export default function TablePage() {
       {error && (
         <div className="msg error" role="alert">
           <p>{error}</p>
-          {!matchId && !ended && <button onClick={() => void join()}>Try again</button>}
+          {!matchId && !ended && <button onClick={() => void start()}>Try again</button>}
         </div>
       )}
 
-      {!match && !ended && !error && <p className="status">Joining the table…</p>}
+      {!match && !ended && !error && !choosing && <p className="status">Joining the table…</p>}
+
+      {choosing && !match && (
+        <section className="card">
+          <p className="status">Nobody is playing at this table. What do you want to play?</p>
+          <div className="format-choice">
+            <button className="primary" onClick={() => pick('singles')}>
+              Singles
+              <span>1 vs 1</span>
+            </button>
+            <button className="primary" onClick={() => pick('doubles')}>
+              Doubles
+              <span>2 vs 2</span>
+            </button>
+          </div>
+          <p className="hint">The others who tap this table will join your match.</p>
+        </section>
+      )}
 
       {ended && (
         <section className="card">
