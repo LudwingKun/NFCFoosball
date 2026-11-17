@@ -13,6 +13,7 @@ type Row = {
   rating: number
   games_played: number
   wins: number
+  draws: number
   losses: number
   win_percentage: number
 }
@@ -87,7 +88,7 @@ export default function LeaderboardPage() {
               <>
                 <Stat label="Rating" value={mine.rating} />
                 <Stat label="Rank" value={`#${myRank}`} />
-                <Stat label="Record" value={`${mine.wins}–${mine.losses}`} />
+                <Stat label="Record (W–D–L)" value={`${mine.wins}–${mine.draws}–${mine.losses}`} />
                 <Stat label="Win rate" value={`${Number(mine.win_percentage)}%`} />
               </>
             ) : (
@@ -109,6 +110,7 @@ export default function LeaderboardPage() {
                     <th>Rating</th>
                     <th>Games</th>
                     <th>W</th>
+                    <th>D</th>
                     <th>L</th>
                     <th>Win %</th>
                   </tr>
@@ -124,6 +126,7 @@ export default function LeaderboardPage() {
                       <td className="rating">{r.rating}</td>
                       <td>{r.games_played}</td>
                       <td>{r.wins}</td>
+                      <td>{r.draws}</td>
                       <td>{r.losses}</td>
                       <td>{Number(r.win_percentage)}%</td>
                     </tr>

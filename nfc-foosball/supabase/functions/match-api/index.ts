@@ -223,6 +223,7 @@ Deno.serve(async (req: Request) => {
         .select(`
       *,
       table:tables(*),
+      competition:competitions(name),
       participants:match_players(
         player_id,
         team,

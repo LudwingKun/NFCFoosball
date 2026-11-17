@@ -230,3 +230,16 @@
   font-size: 0.9rem;
   line-height: 1.4;
 }
+
+.table-page .badge {
+  display: inline-block;
+  margin: 0 0 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--orange-500);
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.result .hint { margin-bottom: 12px; }

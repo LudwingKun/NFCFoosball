@@ -19,6 +19,9 @@ type Match = {
   format: Format
   team_a_score: number | null
   team_b_score: number | null
+  allows_draws: boolean
+  k_multiplier: number
+  competition?: { name: string } | null
   table?: { name: string } | null
   participants: Participant[]
 }
@@ -226,12 +229,19 @@ export default function TablePage() {
 
       {match && (
         <section className="card">
+          {match.competition && (
+            <p className="badge">
+              {match.competition.name}: ratings count ×{Number(match.k_multiplier)}
+            </p>
+          )}
           <p className="status">
             {match.status === 'open' &&
               `Waiting for players: ${joined} of ${size * 2} joined`}
             {match.status === 'in_progress' && 'Match in progress. Enter the score when you finish.'}
             {match.status === 'completed' &&
-              `Final score: ${match.team_a_score} to ${match.team_b_score}`}
+              (match.team_a_score === match.team_b_score
+                ? `Draw: ${match.team_a_score} to ${match.team_b_score}`
+                : `Final score: ${match.team_a_score} to ${match.team_b_score}`)}
             {match.status === 'cancelled' && 'This match was cancelled.'}
             {!['open', 'in_progress', 'completed', 'cancelled'].includes(match.status) && match.status}
           </p>
@@ -252,7 +262,11 @@ export default function TablePage() {
 
           {match.status === 'in_progress' && iAmIn && (
             <>
-              <ResultForm matchId={match.id} onSubmitted={() => setRefresh(n => n + 1)} />
+              <ResultForm
+                matchId={match.id}
+                allowsDraws={match.allows_draws}
+                onSubmitted={() => setRefresh(n => n + 1)}
+              />
               <div className="lobby-actions">
                 <button className="secondary" onClick={() => void cancelMatch()} disabled={working}>
                   {working ? 'Cancelling…' : 'Cancel match'}
@@ -303,7 +317,15 @@ function TeamColumn({
   )
 }
 
-function ResultForm({ matchId, onSubmitted }: { matchId: string; onSubmitted: () => void }) {
+function ResultForm({
+  matchId,
+  allowsDraws,
+  onSubmitted,
+}: {
+  matchId: string
+  allowsDraws: boolean
+  onSubmitted: () => void
+}) {
   const [a, setA] = useState('')
   const [b, setB] = useState('')
   const [busy, setBusy] = useState(false)
@@ -312,8 +334,8 @@ function ResultForm({ matchId, onSubmitted }: { matchId: string; onSubmitted: ()
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
-    if (a === b) {
-      setError('The score cannot be a tie.')
+    if (Number(a) === Number(b) && !allowsDraws) {
+      setError('A draw is not allowed in this match. Someone has to win.')
       return
     }
     setBusy(true)
@@ -342,6 +364,7 @@ function ResultForm({ matchId, onSubmitted }: { matchId: string; onSubmitted: ()
           <input type="number" min={0} step={1} value={b} onChange={e => setB(e.target.value)} required />
         </label>
       </div>
+      {allowsDraws && <p className="hint">Equal scores count as a draw.</p>}
       {error && <p className="msg error" role="alert">{error}</p>}
       <button type="submit" className="primary" disabled={busy}>
         {busy ? 'Submitting…' : 'Submit result'}
