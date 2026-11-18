@@ -9,11 +9,16 @@ For the full technical description (database, security, API, Elo derivation) see
 
 ## How it works
 
-1. The tag stores a URL: `https://<your-domain>/t/<table-slug>`, for example `/t/main`.
-2. The first tap opens the login page. After login or signup the player lands back on the table.
-   Later taps go straight to the table, because the login is remembered by the browser.
-3. If a match is waiting at the table, the player joins it. If nobody is playing, the player chooses
-   **singles** (1 vs 1) or **doubles** (2 vs 2), and the others who tap join that match.
+1. Each table has **two tags**, one on each side. They store a URL with the table and the team:
+   `https://<your-domain>/t/<table-slug>?team=A` and `...?team=B`, for example `/t/main?team=B`.
+2. The first tap opens the login page. After login or signup the player lands back on the same
+   address, so the team is kept. Later taps go straight to the table, because the login is
+   remembered by the browser.
+3. If a match is waiting at the table, the player joins it on the team of the tag. If that team is
+   full, the page offers the other team. If nobody is playing, the player chooses **singles**
+   (1 vs 1) or **doubles** (2 vs 2) and starts the match on the team of the tag.
+   Without `?team=`, the emptier team is used.
+   People who are not at a table use the table menu (`/tables`), which lists every table with its state.
 4. The match starts by itself when both teams are full.
 5. At the end, any player of the match enters the score. Ratings are updated immediately.
 
@@ -21,6 +26,8 @@ Extra rules:
 
 - A lobby that nobody joins for 30 minutes is deleted. A started match with no result after
   3 hours is cancelled. Players can also leave a lobby or cancel a running match.
+- Leaving is personal: it removes only the player who leaves. The match is deleted when the last
+  player leaves. The player who created a match has no special rights.
 - Elo is kept separately for singles and doubles. Everyone starts at 1200, base K = 32.
 - Draws are allowed in casual matches. In a competition (tournament) matches can be worth more
   (a K multiplier) and draws can be switched off.
@@ -47,7 +54,7 @@ nfc-foosball/
 │       ├── lib/               supabase.ts (client), api.ts (calls match-api)
 │       ├── context/           AuthContext.tsx (who is logged in)
 │       ├── components/        ProtectedRoute.tsx, AppHeader.tsx
-│       └── pages/             LoginPage, TablePage, LeaderboardPage
+│       └── pages/             LoginPage, TablesPage, TablePage, LeaderboardPage
 ├── supabase/
 │   ├── functions/match-api/   the API (Edge Function)
 │   ├── migrations/            database schema, in order
@@ -64,10 +71,11 @@ Migrations, applied in this order:
 | `0001_initial_schema.sql` | tables, signup trigger, RLS, join/create/submit functions, leaderboard |
 | `20261114120000_leave_cancel_cleanup.sql` | leave match, cancel match, cleanup of stale matches |
 | `20261117100000_competitions_and_draws.sql` | competitions (K multiplier), draws |
+| `20261118100000_team_choice_and_table_overview.sql` | team chosen when creating a match, table menu data |
 
 ## Run it locally
 
-Requirements: Node.js, the [Supabase CLI](https://supabase.com/docs/guides/cli) and Docker in the root project!!
+Requirements: Node.js, the [Supabase CLI](https://supabase.com/docs/guides/cli) and Docker.
 
 ```bash
 # 1. Start the local Supabase stack and apply all migrations
@@ -152,12 +160,13 @@ and each web address keeps its own login session.
 
 ## NFC tags
 
-1. Open `https://<your-domain>/t/main` in a browser and check that it loads.
+1. Open `https://<your-domain>/t/main?team=A` in a browser and check that it loads.
 2. With a free app such as NFC Tools: Write → Add a record → URL/URI, enter the address, write it.
-3. Test it by tapping the tag. When it works, lock the tag (this cannot be undone).
+3. Repeat for the other side with `?team=B`. Put each tag on its own side of the table.
+4. Test it by tapping each tag. When it works, lock the tags (this cannot be undone).
 
 NTAG213 stickers are enough. NFC does not work through bare metal: use on-metal tags or a spacer.
-iPhones from the XS onwards read tags in the background; on Android, NFC must be on. 34KB is the size of the link pasted in the NFC tag 
+iPhones from the XS onwards read tags in the background; on Android, NFC must be on.
 
 ## Tables
 
@@ -168,7 +177,8 @@ lowercase letters, digits and dashes (2 to 40 characters). Run in the SQL editor
 insert into public.tables(name, slug) values ('Garage Table', 'garage');
 ```
 
-Its tag is `https://<your-domain>/t/garage`. To close a table:
+Its tags are `https://<your-domain>/t/garage?team=A` and `...?team=B`. It also appears in the table
+menu by itself. To close a table:
 `update public.tables set is_active = false where slug = 'garage';`
 
 ## Competitions (tournament matches)
@@ -213,14 +223,15 @@ body `{ "action": "...", ... }`. Answers are `{ "data": ... }` or `{ "error": ".
 
 | action | parameters | what it does |
 |---|---|---|
-| `join_table` | `table_slug`, `format` | join the match of the table, creating it if nobody is playing |
+| `join_table` | `table_slug`, `format`, `team` (optional) | join the match of the table on that team, creating it if nobody is playing |
+| `list_tables` | | every active table with the state of its match, for the table menu |
 | `get_table_match` | `table_slug` | the table's open match, if visible to the caller |
 | `get_match` | `match_id` | a match with its participants, table and competition |
 | `leave_match` | `match_id` | leave an open match (deleted when empty) |
 | `cancel_match` | `match_id` | cancel a match in progress, no rating change |
 | `submit_result` | `match_id`, `team_a_score`, `team_b_score` | finish the match and update Elo |
 | `get_leaderboard` | `format`, `limit` | ranking for singles or doubles |
-| `create_match`, `join_match` | | lower-level actions used by `join_table` |
+| `create_match`, `join_match` | `team` (optional for create) | lower-level actions used by `join_table` |
 
 ## Security notes
 
@@ -241,6 +252,7 @@ body `{ "action": "...", ... }`. Answers are `{ "data": ... }` or `{ "error": ".
 | "email rate limit exceeded" on signup | "Confirm email" is on in Supabase |
 | "Database error saving new user" | display name not 2 to 32 characters, or already taken |
 | Match does not start | doubles needs four players; or the hosted database lacks the latest migrations |
+| "Team A is already full" | the team on the tag is complete; use the button for the other team |
 | `401 Invalid JWT` on API calls | set `verify_jwt = false` for `match-api` and redeploy |
 
 ## Roadmap

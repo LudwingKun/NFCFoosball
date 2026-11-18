@@ -88,9 +88,14 @@ Deno.serve(async (req: Request) => {
         !["singles", "doubles"].includes(String(format))) {
         return badRequest("table_slug and format (singles|doubles) are required");
       }
+      const side = body.team ?? "A";
+      if (!["A", "B"].includes(String(side))) {
+        return badRequest("team must be A or B");
+      }
       ({ data: result, error } = await supabase.rpc("create_match", {
         p_table_slug: tableSlug,
         p_format: format,
+        p_team: side,
       }));
       break;
     }
@@ -120,6 +125,11 @@ Deno.serve(async (req: Request) => {
       if (typeof slug !== "string" || !["singles", "doubles"].includes(String(format))) {
         return badRequest("table_slug and format (singles|doubles) are required");
       }
+      // Team written on the tag (/t/main?team=B). Optional: without it the emptier team is used.
+      const wanted = body.team;
+      if (wanted !== undefined && !["A", "B"].includes(String(wanted))) {
+        return badRequest("team must be A or B");
+      }
       const me = userData.user.id;
 
       // Housekeeping: drop lobbies nobody joined for 30 min and cancel matches
@@ -139,22 +149,24 @@ Deno.serve(async (req: Request) => {
         ({ error } = await supabase.rpc("create_match", {
           p_table_slug: slug,
           p_format: format,
+          p_team: wanted ?? "A",
         }));
       } else if (!active.participants.some((p: Participant) => p.player_id === me)) {
         if (active.status !== "open") {
           return jsonResponse({ error: "A match is already in progress on this table" }, 409);
         }
-        // Put the new player in the emptier team (Team A on a tie).
+        // The tag decides the team. Without one, use the emptier team (Team A on a tie).
+        // If the requested team is full, join_match fails with 23514 -> 409 "Selected team is full".
         const size = TEAM_SIZE[active.format];
         const count = (t: string) =>
           active.participants.filter((p: Participant) => p.team === t).length;
         const a = count("A");
         const b = count("B");
-        const team = b >= size ? "A" : a >= size ? "B" : a <= b ? "A" : "B";
+        const side = wanted ?? (b >= size ? "A" : a >= size ? "B" : a <= b ? "A" : "B");
 
         ({ error } = await supabase.rpc("join_match", {
           p_match_id: active.id,
-          p_team: team,
+          p_team: side,
         }));
       }
       // else: I am already in this match, nothing to do.
@@ -164,6 +176,13 @@ Deno.serve(async (req: Request) => {
       const refreshed = await findActiveMatch(supabase, slug);
       result = refreshed.data;
       error = refreshed.error;
+      break;
+    }
+
+    // Table menu: every active table with the state of its match.
+    case "list_tables": {
+      await supabase.rpc("cleanup_stale_matches");
+      ({ data: result, error } = await supabase.rpc("table_overview"));
       break;
     }
 

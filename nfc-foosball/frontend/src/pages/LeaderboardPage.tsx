@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { callApi } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import AppHeader from '../components/AppHeader'
-import './LeaderboardPage.css'
+import './css/LeaderboardPage.css'
 
 type Format = 'singles' | 'doubles'
 

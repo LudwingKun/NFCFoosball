@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import './LoginPage.css'
+import './css/LoginPage.css'
 
 type Mode = 'login' | 'signup'
 
@@ -18,10 +18,11 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  // Where to go after login: the page the user was trying to open (e.g. a tapped
-  // NFC tag at /t/main), otherwise the match page of the main table.
+  // Where to go after login: the page the user was trying to open (a tapped NFC tag,
+  // the leaderboard...), otherwise the table menu. The query string is kept, so the
+  // team written on a tag survives the login.
   const from = (location.state as { from?: { pathname: string; search: string } } | null)?.from
-  const destination = from ? from.pathname + from.search : '/t/main'
+  const destination = from ? from.pathname + from.search : '/tables'
 
   // Already logged in (or just logged in / signed up): go to the match page.
   if (!loading && session) return <Navigate to={destination} replace />
@@ -103,9 +104,13 @@ export default function LoginPage() {
 
           <h1>{isLogin ? 'Welcome back' : 'Create your account'}</h1>
           <p className="sub">
-            {isLogin
-              ? 'Sign in to see your matches and rating.'
-              : 'Pick a name. It is what other players see on the leaderboard.'}
+            {!isLogin
+              ? 'Pick a name. It is what other players see on the leaderboard.'
+              : destination.startsWith('/leaderboard')
+                ? 'Sign in to see the leaderboard.'
+                : destination.startsWith('/t/')
+                  ? 'Sign in to join the match.'
+                  : 'Sign in to pick a table and play.'}
           </p>
 
           <form onSubmit={handleSubmit}>

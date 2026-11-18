@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { callApi, type ApiError } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import AppHeader from '../components/AppHeader'
-import './TablePage.css'
+import './css/TablePage.css'
 
 type Format = 'singles' | 'doubles'
+type Team = 'A' | 'B'
 
 type Participant = {
   player_id: string
@@ -29,6 +30,12 @@ type Match = {
 // Why the player is no longer in a match (shown instead of the match card).
 type Ended = 'left' | 'closed'
 
+// The requested team is already complete (join_match answers 409 "Selected team is full").
+function isTeamFull(e: unknown) {
+  const err = e as ApiError
+  return err.status === 409 && /team is full/i.test(err.message)
+}
+
 function describe(e: unknown) {
   const err = e as ApiError
   if (err.status === 404) {
@@ -45,6 +52,10 @@ function describe(e: unknown) {
 
 export default function TablePage() {
   const { slug = 'main' } = useParams()
+  // The NFC tag can carry the side of the table: /t/main?team=A or ?team=B
+  const [searchParams] = useSearchParams()
+  const teamParam = (searchParams.get('team') ?? '').toUpperCase()
+  const urlTeam: Team | undefined = teamParam === 'A' || teamParam === 'B' ? teamParam : undefined
   const { session } = useAuth()
   const me = session?.user.id
 
@@ -52,14 +63,15 @@ export default function TablePage() {
   const [match, setMatch] = useState<Match | null>(null)
   const [ended, setEnded] = useState<Ended | null>(null)
   const [choosing, setChoosing] = useState(false) // nobody is playing: ask singles or doubles
+  const [fullTeam, setFullTeam] = useState<Team | null>(null) // the team on the tag is complete
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false) // a leave/cancel request is running
   const [refresh, setRefresh] = useState(0) // bump to reload the match right away
   const joining = useRef(false) // also protects against StrictMode running the effect twice
 
-  // Joins the table's match. The format is only used when nobody is playing yet and
-  // the match has to be created; if a match already exists the player just joins it.
-  const join = useCallback(async (format: Format) => {
+  // Joins the table's match, on the given team if there is one. The format is only used
+  // when nobody is playing yet and the match has to be created.
+  const join = useCallback(async (format: Format, team?: Team) => {
     if (joining.current) return
     joining.current = true
     setError(null)
@@ -72,10 +84,12 @@ export default function TablePage() {
           active = await callApi<{ id: string } | null>('join_table', {
             table_slug: slug,
             format,
+            team,
           })
           break
         } catch (e) {
           const status = (e as ApiError).status
+          if (isTeamFull(e)) throw e // retrying cannot help
           if ((status !== 409 && status !== 404) || attempt === 1) throw e
           await new Promise(resolve => setTimeout(resolve, 600))
         }
@@ -83,7 +97,8 @@ export default function TablePage() {
       if (!active) throw new Error('No match available on this table')
       setMatchId(active.id)
     } catch (e) {
-      setError(describe(e))
+      if (isTeamFull(e) && team) setFullTeam(team)
+      else setError(describe(e))
       joining.current = false
     }
   }, [slug])
@@ -94,12 +109,12 @@ export default function TablePage() {
     setError(null)
     try {
       const active = await callApi<{ id: string } | null>('get_table_match', { table_slug: slug })
-      if (active) await join('doubles') // format ignored: the existing match decides
+      if (active) await join('doubles', urlTeam) // format ignored: the existing match decides
       else setChoosing(true)
     } catch (e) {
       setError(describe(e))
     }
-  }, [slug, join])
+  }, [slug, join, urlTeam])
 
   useEffect(() => {
     void start()
@@ -107,7 +122,16 @@ export default function TablePage() {
 
   function pick(format: Format) {
     setChoosing(false)
-    void join(format)
+    void join(format, urlTeam)
+  }
+
+  // "Team A is full": offer the other side.
+  function joinOtherTeam() {
+    if (!fullTeam) return
+    const other: Team = fullTeam === 'A' ? 'B' : 'A'
+    setFullTeam(null)
+    joining.current = false
+    void join('doubles', other)
   }
 
   // Poll the match every 3s until it is over.
@@ -144,6 +168,7 @@ export default function TablePage() {
     setMatchId(null)
     setEnded(null)
     setChoosing(false)
+    setFullTeam(null)
     joining.current = false
     void start()
   }
@@ -184,7 +209,7 @@ export default function TablePage() {
 
   return (
     <main className="table-page">
-      <AppHeader playTo={`/t/${slug}`} />
+      <AppHeader />
       <p className="table-name">Table: {match?.table?.name ?? slug}</p>
 
       {error && (
@@ -194,7 +219,21 @@ export default function TablePage() {
         </div>
       )}
 
-      {!match && !ended && !error && !choosing && <p className="status">Joining the table…</p>}
+      {!match && !ended && !error && !choosing && !fullTeam && (
+        <p className="status">Joining the table…</p>
+      )}
+
+      {fullTeam && (
+        <section className="card">
+          <p className="status">Team {fullTeam} is already full.</p>
+          <div className="actions">
+            <button className="primary" onClick={joinOtherTeam}>
+              Join Team {fullTeam === 'A' ? 'B' : 'A'} instead
+            </button>
+            <Link to="/tables">Choose another table</Link>
+          </div>
+        </section>
+      )}
 
       {choosing && !match && (
         <section className="card">
@@ -209,6 +248,7 @@ export default function TablePage() {
               <span>2 vs 2</span>
             </button>
           </div>
+          {urlTeam && <p className="hint">You will start on Team {urlTeam}.</p>}
           <p className="hint">The others who tap this table will join your match.</p>
         </section>
       )}
